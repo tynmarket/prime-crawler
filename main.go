@@ -9,6 +9,7 @@ import (
 
 var reTitle = regexp.MustCompile("h2 data-attribute=\"(.+?)\"")
 var reLink = regexp.MustCompile("href=\"(https[^>]+?)\"><h2 data-attribute")
+var reAsin = regexp.MustCompile("dp/(.+?)/")
 
 func main() {
 	url := "https://www.amazon.co.jp/s/?node=5347026051"
@@ -50,5 +51,8 @@ func parse(html string) {
 
 	for i, link := range links {
 		fmt.Printf("link %d: %s\n", i, link[1])
+
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		fmt.Printf("asin %d: %s\n", i, asin[0][1])
 	}
 }
