@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,16 +15,28 @@ import (
 	"github.com/guregu/dynamo"
 )
 
-var reTitle = regexp.MustCompile("h2 data-attribute=\"(.+?)\"")
-var reLink = regexp.MustCompile("href=\"(https[^>]+?)\"><h2 data-attribute")
+var reMain = regexp.MustCompile("s-main-slot")
 var reAsin = regexp.MustCompile("dp/(.+?)/")
 
-func main() {
-	url := "https://www.amazon.co.jp/s/?node=5347026051"
-	html := crawl(url)
+var reTitleFirst = regexp.MustCompile("h2 data-attribute=\"(.+?)\"")
+var reLinkFirst = regexp.MustCompile("href=\"(https[^>]+?)\"><h2 data-attribute")
 
-	if html != "" {
-		parse(html)
+var reTitle = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?span.+?>(.+?)</span>")
+var reLink = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?href=\"(.+?)\"")
+
+func main() {
+	for i := 1; i <= 3; i++ {
+		url := "https://www.amazon.co.jp/s/?node=5347026051&page=" + strconv.Itoa(i)
+
+		fmt.Printf("url: %s\n", url)
+
+		html := crawl(url)
+
+		if html != "" {
+			parse(html, i)
+		} else {
+			fmt.Println("html is empty")
+		}
 	}
 }
 
@@ -30,16 +44,19 @@ func crawl(url string) string {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
+		fmt.Printf("req, err: %v\n", err)
 		return ""
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Printf("resp, err: %v\n", err)
 		return ""
 	}
 	defer resp.Body.Close()
 
 	bytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		fmt.Printf("bytes, err: %v\n", err)
 		return ""
 	}
 
@@ -58,8 +75,69 @@ type book struct {
 var db *dynamo.DB
 var table dynamo.Table
 
-func parse(html string) {
+func parse(html string, page int) {
+	secondPage := reMain.MatchString(html)
+
+	if page == 1 && secondPage {
+		fmt.Println("crawlOtherPage")
+		crawlOtherPage()
+	} else if secondPage {
+		fmt.Println("parseSecondPage")
+		parseSecondPage(html)
+	} else {
+		fmt.Println("parseFirstPage")
+		parseFirstPage(html)
+	}
+}
+
+func crawlOtherPage() {
+	url := "https://www.amazon.co.jp/b?node=5347026051"
+	html := crawl(url)
+
+	if html != "" {
+		parse(html, 0)
+	} else {
+		fmt.Println("html is empty")
+	}
+}
+
+func dumpPage(html string) {
+	file, err := os.Create("page.html")
+	if err != nil {
+		fmt.Printf("file, err: %v\n", err)
+	}
+	defer file.Close()
+
+	file.Write(([]byte)(html))
+}
+
+func parseFirstPage(html string) {
+	titles := reTitleFirst.FindAllStringSubmatch(html, -1)
+
+	for i, title := range titles {
+		fmt.Printf("title %d: %s\n", i, title[1])
+	}
+
+	links := reLinkFirst.FindAllStringSubmatch(html, -1)
+
+	for i, link := range links {
+		fmt.Printf("link %d: %s\n", i, link[1])
+
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		fmt.Printf("asin %d: %s\n", i, asin[0][1])
+
+		title := titles[i][1]
+		create(title, asin[0][1])
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func parseSecondPage(html string) {
 	titles := reTitle.FindAllStringSubmatch(html, -1)
+	if len(titles) == 0 {
+		log.Fatal("titles is zero")
+	}
 
 	for i, title := range titles {
 		fmt.Printf("title %d: %s\n", i, title[1])
@@ -75,6 +153,8 @@ func parse(html string) {
 
 		title := titles[i][1]
 		create(title, asin[0][1])
+
+		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -92,7 +172,6 @@ func create(title string, asin string) {
 		Categoy:   0,
 		CreatedAt: createdAt,
 	}
-
 	err := table.Put(record).Run()
 
 	if err == nil {
