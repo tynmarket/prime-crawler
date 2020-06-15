@@ -12,6 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/dghubble/go-twitter/twitter"
+	"github.com/dghubble/oauth1"
 	"github.com/guregu/dynamo"
 )
 
@@ -23,6 +25,8 @@ var reLinkFirst = regexp.MustCompile("href=\"(https[^>]+?)\"><h2 data-attribute"
 
 var reTitle = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?span.+?>(.+?)</span>")
 var reLink = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?href=\"(.+?)\"")
+
+var client *twitter.Client
 
 func main() {
 	for i := 1; i <= 3; i++ {
@@ -101,60 +105,50 @@ func crawlOtherPage() {
 	}
 }
 
-func dumpPage(html string) {
-	file, err := os.Create("page.html")
-	if err != nil {
-		fmt.Printf("file, err: %v\n", err)
-	}
-	defer file.Close()
-
-	file.Write(([]byte)(html))
-}
-
 func parseFirstPage(html string) {
 	titles := reTitleFirst.FindAllStringSubmatch(html, -1)
-
-	for i, title := range titles {
-		fmt.Printf("title %d: %s\n", i, title[1])
-	}
-
 	links := reLinkFirst.FindAllStringSubmatch(html, -1)
 
 	for i, link := range links {
-		fmt.Printf("link %d: %s\n", i, link[1])
-
 		asin := reAsin.FindAllStringSubmatch(link[1], -1)
-		fmt.Printf("asin %d: %s\n", i, asin[0][1])
-
 		title := titles[i][1]
-		create(title, asin[0][1])
+
+		tweetOnce(title, asin[0][1])
 
 		time.Sleep(1 * time.Second)
 	}
+
 }
 
 func parseSecondPage(html string) {
 	titles := reTitle.FindAllStringSubmatch(html, -1)
-	if len(titles) == 0 {
-		log.Fatal("titles is zero")
-	}
-
-	for i, title := range titles {
-		fmt.Printf("title %d: %s\n", i, title[1])
-	}
-
 	links := reLink.FindAllStringSubmatch(html, -1)
 
 	for i, link := range links {
-		fmt.Printf("link %d: %s\n", i, link[1])
-
 		asin := reAsin.FindAllStringSubmatch(link[1], -1)
-		fmt.Printf("asin %d: %s\n", i, asin[0][1])
-
 		title := titles[i][1]
-		create(title, asin[0][1])
+
+		tweetOnce(title, asin[0][1])
 
 		time.Sleep(1 * time.Second)
+	}
+}
+
+func tweetOnce(title string, asin string) {
+	var book book
+	query := table.Get("asin", asin)
+	err := query.One(&book)
+
+	if err != nil {
+		err := tweet(title, asin)
+
+		if err != nil {
+			fmt.Printf("tweet, err: %v\n", err)
+		} else {
+			create(title, asin)
+		}
+	} else {
+		fmt.Printf("tweeted %s\n", asin)
 	}
 }
 
@@ -178,11 +172,72 @@ func create(title string, asin string) {
 		fmt.Printf("put book: %#v\n", record)
 	} else {
 		fmt.Printf("Failed to put item, err: %v\n", err)
-		fmt.Printf("book: %#v\n", record)
+		fmt.Printf("asin: %s\n", asin)
+	}
+}
+
+func tweet(title string, asin string) error {
+	url := "https://www.amazon.co.jp/exec/obidos/ASIN/" + asin + "/twiaso-22/"
+	text := fmt.Sprintf("%s\n%s", title, url)
+
+	fmt.Printf("tweet : %s\n", asin)
+	_, _, err := client.Statuses.Update(text, nil)
+
+	return err
+}
+
+func dumpPage(html string) {
+	file, err := os.Create("page.html")
+	if err != nil {
+		fmt.Printf("file, err: %v\n", err)
+	}
+	defer file.Close()
+
+	file.Write(([]byte)(html))
+}
+
+func parseFirstPageDebug(html string) {
+	titles := reTitleFirst.FindAllStringSubmatch(html, -1)
+	if len(titles) == 0 {
+		log.Fatal("titles is zero")
+	}
+
+	for i, title := range titles {
+		fmt.Printf("title %d: %s\n", i, title[1])
+	}
+
+	links := reLinkFirst.FindAllStringSubmatch(html, -1)
+
+	for i, link := range links {
+		fmt.Printf("link %d: %s\n", i, link[1])
+
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		fmt.Printf("asin %d: %s\n", i, asin[0][1])
+	}
+}
+
+func parseSecondPageDebug(html string) {
+	titles := reTitle.FindAllStringSubmatch(html, -1)
+	if len(titles) == 0 {
+		log.Fatal("titles is zero")
+	}
+
+	for i, title := range titles {
+		fmt.Printf("title %d: %s\n", i, title[1])
+	}
+
+	links := reLink.FindAllStringSubmatch(html, -1)
+
+	for i, link := range links {
+		fmt.Printf("link %d: %s\n", i, link[1])
+
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		fmt.Printf("asin %d: %s\n", i, asin[0][1])
 	}
 }
 
 func init() {
+	// dynamodb
 	dynamoDbLocal := os.Getenv("DYNAMO_DB_LOCAL")
 
 	if dynamoDbLocal == "true" {
@@ -194,4 +249,15 @@ func init() {
 		dynamo.New(session.New(), &aws.Config{Region: aws.String("ap-northeast-1")})
 	}
 	table = db.Table("prime_books")
+
+	// Twitter client
+	consumerKey := os.Getenv("API_KEY")
+	consumerSecret := os.Getenv("API_SECRET")
+	accessToken := os.Getenv("ACCESS_TOKEN")
+	accessSecret := os.Getenv("ACCESS_TOKEN_SECRET")
+
+	config := oauth1.NewConfig(consumerKey, consumerSecret)
+	token := oauth1.NewToken(accessToken, accessSecret)
+	httpClient := config.Client(oauth1.NoContext, token)
+	client = twitter.NewClient(httpClient)
 }
