@@ -178,7 +178,7 @@ func create(title string, asin string) {
 
 func tweet(title string, asin string) error {
 	url := "https://www.amazon.co.jp/exec/obidos/ASIN/" + asin + "/twiaso-22/"
-	text := fmt.Sprintf("%s\n%s", title, url)
+	text := fmt.Sprintf("%s\n%s\n#kindle #amazon", title, url)
 
 	fmt.Printf("tweet : %s\n", asin)
 	_, _, err := client.Statuses.Update(text, nil)
