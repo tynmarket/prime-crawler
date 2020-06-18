@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Timeout: 300
+
+Resources:
+  PrimeCrawlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: handler
+      Runtime: go1.x
+      Policies:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole
+      Environment:
+        Variables:
+          TWITTER_CONSUMER_KEY: !Ref TwitterConsumerKey
+          TWITTER_CONSUMER_SECRET: !Ref TwitterConsumerSecret
+          TWITTER_ACCESS_TOKEN: !Ref TwitterAccessToken
+          TWITTER_ACCESS_TOKEN_SECRET: !Ref TwitterAccessTokenSecret
+      Events:
+        CrawlePrimeHourly:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Input: '{"start": 1,"end": 3}'
+
+Parameters:
+  TwitterConsumerKey:
+    Type: String
+  TwitterConsumerSecret:
+    Type: String
+  TwitterAccessToken:
+    Type: String
+  TwitterAccessTokenSecret:
+    Type: String

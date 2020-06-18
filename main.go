@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/dghubble/go-twitter/twitter"
@@ -29,7 +31,27 @@ var reLink = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?href=\"(.
 var client *twitter.Client
 
 func main() {
-	for i := 1; i <= 3; i++ {
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") != "" {
+		lambda.Start(handler)
+	} else {
+		crawlPage(1, 3)
+	}
+}
+
+// Event is
+type Event struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+func handler(ctx context.Context, event Event) {
+	fmt.Printf("event = %#v\n", event)
+
+	crawlPage(event.Start, event.End)
+}
+
+func crawlPage(start int, end int) {
+	for i := start; i <= end; i++ {
 		url := "https://www.amazon.co.jp/s/?node=5347026051&page=" + strconv.Itoa(i)
 
 		fmt.Printf("url: %s\n", url)
@@ -178,7 +200,7 @@ func create(title string, asin string) {
 
 func tweet(title string, asin string) error {
 	url := "https://www.amazon.co.jp/exec/obidos/ASIN/" + asin + "/twiaso-22/"
-	text := fmt.Sprintf("%s\n%s\n#kindle #amazon", title, url)
+	text := fmt.Sprintf("%s\n%s", title, url)
 
 	fmt.Printf("tweet : %s\n", asin)
 	_, _, err := client.Statuses.Update(text, nil)
@@ -246,15 +268,15 @@ func init() {
 			Endpoint: aws.String("http://localhost:8000"),
 		})
 	} else {
-		dynamo.New(session.New(), &aws.Config{Region: aws.String("ap-northeast-1")})
+		db = dynamo.New(session.New(), &aws.Config{Region: aws.String("ap-northeast-1")})
 	}
 	table = db.Table("prime_books")
 
 	// Twitter client
-	consumerKey := os.Getenv("API_KEY")
-	consumerSecret := os.Getenv("API_SECRET")
-	accessToken := os.Getenv("ACCESS_TOKEN")
-	accessSecret := os.Getenv("ACCESS_TOKEN_SECRET")
+	consumerKey := os.Getenv("TWITTER_CONSUMER_KEY")
+	consumerSecret := os.Getenv("TWITTER_CONSUMER_SECRET")
+	accessToken := os.Getenv("TWITTER_ACCESS_TOKEN")
+	accessSecret := os.Getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
 	config := oauth1.NewConfig(consumerKey, consumerSecret)
 	token := oauth1.NewToken(accessToken, accessSecret)
