@@ -2,20 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/ChimeraCoder/anaconda"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/dghubble/go-twitter/twitter"
-	"github.com/dghubble/oauth1"
 	"github.com/guregu/dynamo"
 )
 
@@ -24,17 +26,19 @@ var reAsin = regexp.MustCompile("dp/(.+?)/")
 
 var reTitleFirst = regexp.MustCompile("h2 data-attribute=\"(.+?)\"")
 var reLinkFirst = regexp.MustCompile("href=\"(https[^>]+?)\"><h2 data-attribute")
+var reImageFirst = regexp.MustCompile("(?s)<li.+?s-result-item.+?<img src=\"(.+?)\"")
 
 var reTitle = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?span.+?>(.+?)</span>")
 var reLink = regexp.MustCompile("(?s)s-result-item.+?s-asin.+?h2.+?a.+?href=\"(.+?)\"")
+var reImage = regexp.MustCompile("(?s)s-result-item.+?<img src=\"(.+?)\"")
 
-var client *twitter.Client
+var client *anaconda.TwitterApi
 
 func main() {
 	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") != "" {
 		lambda.Start(handler)
 	} else {
-		crawlPage(1, 3)
+		crawlPage(4, 4)
 	}
 }
 
@@ -130,12 +134,19 @@ func crawlOtherPage() {
 func parseFirstPage(html string) {
 	titles := reTitleFirst.FindAllStringSubmatch(html, -1)
 	links := reLinkFirst.FindAllStringSubmatch(html, -1)
+	images := reImageFirst.FindAllStringSubmatch(html, -1)
+
+	// CSSスプライトの画像を除く
+	if strings.Contains(images[0][1], "sprites") {
+		images = images[1:]
+	}
 
 	for i, link := range links {
-		asin := reAsin.FindAllStringSubmatch(link[1], -1)
 		title := titles[i][1]
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		image := images[i][1]
 
-		tweetOnce(title, asin[0][1])
+		tweetOnce(title, asin[0][1], image)
 
 		time.Sleep(1 * time.Second)
 	}
@@ -145,24 +156,27 @@ func parseFirstPage(html string) {
 func parseSecondPage(html string) {
 	titles := reTitle.FindAllStringSubmatch(html, -1)
 	links := reLink.FindAllStringSubmatch(html, -1)
+	images := reImage.FindAllStringSubmatch(html, -1)
 
 	for i, link := range links {
-		asin := reAsin.FindAllStringSubmatch(link[1], -1)
 		title := titles[i][1]
+		asin := reAsin.FindAllStringSubmatch(link[1], -1)
+		image := images[i][1]
 
-		tweetOnce(title, asin[0][1])
+		tweetOnce(title, asin[0][1], image)
 
 		time.Sleep(1 * time.Second)
 	}
 }
 
-func tweetOnce(title string, asin string) {
+func tweetOnce(title string, asin string, imageURL string) {
 	var book book
 	query := table.Get("asin", asin)
 	err := query.One(&book)
 
 	if err != nil {
-		err := tweet(title, asin)
+		mediaStr := image(imageURL)
+		err := tweet(title, asin, mediaStr)
 
 		if err != nil {
 			fmt.Printf("tweet, err: %v\n", err)
@@ -198,14 +212,45 @@ func create(title string, asin string) {
 	}
 }
 
-func tweet(title string, asin string) error {
-	url := "https://www.amazon.co.jp/exec/obidos/ASIN/" + asin + "/twiaso-22/"
-	text := fmt.Sprintf("%s\n%s", title, url)
+func tweet(title string, asin string, mediaStr string) error {
+	link := "https://www.amazon.co.jp/exec/obidos/ASIN/" + asin + "/twiaso-22/"
+	text := fmt.Sprintf("%s\n%s", title, link)
 
 	fmt.Printf("tweet : %s\n", asin)
-	_, _, err := client.Statuses.Update(text, nil)
+
+	v := url.Values{}
+	v.Add("media_ids", mediaStr)
+
+	_, err := client.PostTweet(text, v)
 
 	return err
+}
+
+func image(imageURL string) string {
+	resp, err := http.Get(imageURL)
+
+	if err != nil {
+		fmt.Printf("image, err: %v\n", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	bytes, err := ioutil.ReadAll(resp.Body)
+
+	if err != nil {
+		fmt.Printf("bytes, err: %v\n", err)
+		return ""
+	}
+
+	imageStr := base64.StdEncoding.EncodeToString(bytes)
+	media, err := client.UploadMedia(imageStr)
+
+	if err != nil {
+		fmt.Printf("media, err: %v\n", err)
+		return ""
+	}
+
+	return media.MediaIDString
 }
 
 func dumpPage(html string) {
@@ -278,8 +323,5 @@ func init() {
 	accessToken := os.Getenv("TWITTER_ACCESS_TOKEN")
 	accessSecret := os.Getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
-	config := oauth1.NewConfig(consumerKey, consumerSecret)
-	token := oauth1.NewToken(accessToken, accessSecret)
-	httpClient := config.Client(oauth1.NoContext, token)
-	client = twitter.NewClient(httpClient)
+	client = anaconda.NewTwitterApiWithCredentials(accessToken, accessSecret, consumerKey, consumerSecret)
 }
